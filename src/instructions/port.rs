@@ -15,6 +15,18 @@ impl PortRead for u8 {
         }
         value
     }
+
+    #[inline]
+    unsafe fn read_slice_from_port(port: u16, value: &mut [Self]) {
+        unsafe {
+            asm! {
+                "rep ins byte ptr [rdi], dx",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
+        }
+    }
 }
 
 impl PortRead for u16 {
@@ -25,6 +37,18 @@ impl PortRead for u16 {
             asm!("in ax, dx", out("ax") value, in("dx") port, options(nomem, nostack, preserves_flags));
         }
         value
+    }
+
+    #[inline]
+    unsafe fn read_slice_from_port(port: u16, value: &mut [Self]) {
+        unsafe {
+            asm! {
+                "rep ins word ptr [rdi], dx",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
+        }
     }
 }
 
@@ -37,6 +61,18 @@ impl PortRead for u32 {
         }
         value
     }
+
+    #[inline]
+    unsafe fn read_slice_from_port(port: u16, value: &mut [Self]) {
+        unsafe {
+            asm! {
+                "rep ins dword ptr [rdi], dx",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
+        }
+    }
 }
 
 impl PortWrite for u8 {
@@ -44,6 +80,18 @@ impl PortWrite for u8 {
     unsafe fn write_to_port(port: u16, value: u8) {
         unsafe {
             asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    #[inline]
+    unsafe fn write_slice_to_port(port: u16, value: &[Self]) {
+        unsafe {
+            asm! {
+                "rep outs dx, byte ptr [rsi]",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
         }
     }
 }
@@ -55,6 +103,18 @@ impl PortWrite for u16 {
             asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack, preserves_flags));
         }
     }
+
+    #[inline]
+    unsafe fn write_slice_to_port(port: u16, value: &[Self]) {
+        unsafe {
+            asm! {
+                "rep outs dx, word ptr [rsi]",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
+        }
+    }
 }
 
 impl PortWrite for u32 {
@@ -62,6 +122,18 @@ impl PortWrite for u32 {
     unsafe fn write_to_port(port: u16, value: u32) {
         unsafe {
             asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    #[inline]
+    unsafe fn write_slice_to_port(port: u16, value: &[Self]) {
+        unsafe {
+            asm! {
+                "rep outs dx, dword ptr [rsi]",
+                in("rdi") value.as_ptr(),
+                in("rcx") value.len(),
+                in("dx") port,
+            }
         }
     }
 }
@@ -150,6 +222,17 @@ impl<T: PortRead, A: PortReadAccess> PortGeneric<T, A> {
     pub unsafe fn read(&mut self) -> T {
         unsafe { T::read_from_port(self.port) }
     }
+
+    /// Reads from the port.
+    ///
+    /// ## Safety
+    ///
+    /// This function is unsafe because the I/O port could have side effects that violate memory
+    /// safety.
+    #[inline]
+    pub unsafe fn read_slice(&mut self, value: &mut [T]) {
+        unsafe { T::read_slice_from_port(self.port, value) }
+    }
 }
 
 impl<T: PortWrite, A: PortWriteAccess> PortGeneric<T, A> {
@@ -162,6 +245,17 @@ impl<T: PortWrite, A: PortWriteAccess> PortGeneric<T, A> {
     #[inline]
     pub unsafe fn write(&mut self, value: T) {
         unsafe { T::write_to_port(self.port, value) }
+    }
+
+    /// Writes to the port.
+    ///
+    /// ## Safety
+    ///
+    /// This function is unsafe because the I/O port could have side effects that violate memory
+    /// safety.
+    #[inline]
+    pub unsafe fn write_slice(&mut self, value: &[T]) {
+        unsafe { T::write_slice_to_port(self.port, value) }
     }
 }
 
