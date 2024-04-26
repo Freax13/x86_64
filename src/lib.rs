@@ -11,6 +11,9 @@
 #![deny(missing_debug_implementations)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(all(not(target_arch = "x86_64"), feature = "instructions"))]
+compile_error!("The \"instructions\" feature is only support on x86_64.");
+
 pub use crate::addr::{align_down, align_up, PhysAddr, VirtAddr};
 
 pub mod addr;
