@@ -301,6 +301,22 @@ pub trait Mapper<S: PageSize> {
         flags: PageTableFlags,
     ) -> Result<MapperFlush<S>, FlagUpdateError>;
 
+    /// Set the flags of an existing page level 5 table entry
+    ///
+    /// ## Safety
+    ///
+    /// This method is unsafe because changing the flags of a mapping
+    /// might result in undefined behavior. For example, setting the
+    /// `GLOBAL` and `WRITABLE` flags for a page might result in the corruption
+    /// of values stored in that page from processes running in other address
+    /// spaces.
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<S>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError>;
+
     /// Set the flags of an existing page level 4 table entry
     ///
     /// ## Safety

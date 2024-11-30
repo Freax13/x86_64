@@ -432,12 +432,17 @@ pub enum PageTableLevel {
     Three,
     /// Represents the level for a page-map level-4.
     Four,
+    /// Represents the level for a page-map level-5.
+    #[cfg(feature = "pml5")]
+    Five,
 }
 
 impl PageTableLevel {
     /// Returns the next lower level or `None` for level 1
     pub const fn next_lower_level(self) -> Option<Self> {
         match self {
+            #[cfg(feature = "pml5")]
+            PageTableLevel::Five => Some(PageTableLevel::Four),
             PageTableLevel::Four => Some(PageTableLevel::Three),
             PageTableLevel::Three => Some(PageTableLevel::Two),
             PageTableLevel::Two => Some(PageTableLevel::One),
@@ -448,6 +453,11 @@ impl PageTableLevel {
     /// Returns the next higher level or `None` for level 4
     pub const fn next_higher_level(self) -> Option<Self> {
         match self {
+            #[cfg(feature = "pml5")]
+            PageTableLevel::Five => None,
+            #[cfg(feature = "pml5")]
+            PageTableLevel::Four => Some(PageTableLevel::Five),
+            #[cfg(not(feature = "pml5"))]
             PageTableLevel::Four => None,
             PageTableLevel::Three => Some(PageTableLevel::Four),
             PageTableLevel::Two => Some(PageTableLevel::Three),

@@ -1,7 +1,7 @@
 //! This crate provides x86_64 specific functions and data structures,
 //! and access to various system registers.
 
-#![cfg_attr(not(test), no_std)]
+// #![cfg_attr(not(test), no_std)]
 #![cfg_attr(feature = "abi_x86_interrupt", feature(abi_x86_interrupt))]
 #![cfg_attr(feature = "step_trait", feature(step_trait))]
 #![cfg_attr(feature = "doc_auto_cfg", feature(doc_auto_cfg))]

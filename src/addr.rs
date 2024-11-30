@@ -10,7 +10,11 @@ use crate::structures::paging::page_table::PageTableLevel;
 use crate::structures::paging::{PageOffset, PageTableIndex};
 use bit_field::BitField;
 
-const ADDRESS_SPACE_SIZE: u64 = 0x1_0000_0000_0000;
+const ADDRESS_WIDTH: usize = if cfg!(feature = "pml5") { 57 } else { 48 };
+const TOP_BIT_IDX: usize = ADDRESS_WIDTH - 1;
+const SIGN_EXTENDED_BITS: usize = 64 - ADDRESS_WIDTH;
+
+const ADDRESS_SPACE_SIZE: u64 = 1 << ADDRESS_WIDTH;
 
 /// A canonical 64-bit virtual memory address.
 ///
@@ -22,6 +26,8 @@ const ADDRESS_SPACE_SIZE: u64 = 0x1_0000_0000_0000;
 /// On `x86_64`, only the 48 lower bits of a virtual address can be used. The top 16 bits need
 /// to be copies of bit 47, i.e. the most significant bit. Addresses that fulfil this criterion
 /// are called “canonical”. This type guarantees that it always represents a canonical address.
+///
+/// When the `pml5` feature is active, the 57 lower bits are used and the top 7 bits need to be sign extended.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct VirtAddr(u64);
@@ -97,11 +103,12 @@ impl VirtAddr {
     /// This function performs sign extension of bit 47 to make the address
     /// canonical, overwriting bits 48 to 64. If you want to check whether an
     /// address is canonical, use [`new`](Self::new) or [`try_new`](Self::try_new).
+    // TODO: Fix more mentions of 47 and 48.
     #[inline]
     pub const fn new_truncate(addr: u64) -> VirtAddr {
         // By doing the right shift as a signed operation (on a i64), it will
         // sign extend the value, repeating the leftmost bit.
-        VirtAddr(((addr << 16) as i64 >> 16) as u64)
+        VirtAddr(((addr << SIGN_EXTENDED_BITS) as i64 >> SIGN_EXTENDED_BITS) as u64)
     }
 
     /// Creates a new virtual address, without any checks.
@@ -233,6 +240,13 @@ impl VirtAddr {
         PageTableIndex::new_truncate((self.0 >> 12 >> 9 >> 9 >> 9) as u16)
     }
 
+    /// Returns the 9-bit level 5 page table index.
+    #[cfg(feature = "pml5")]
+    #[inline]
+    pub const fn p5_index(self) -> PageTableIndex {
+        PageTableIndex::new_truncate((self.0 >> 12 >> 9 >> 9 >> 9 >> 9) as u16)
+    }
+
     /// Returns the 9-bit level page table index.
     #[inline]
     pub const fn page_table_index(self, level: PageTableLevel) -> PageTableIndex {
@@ -258,7 +272,7 @@ impl VirtAddr {
         let mut steps = end.0.checked_sub(start.0)?;
 
         // Mask away extra bits that appear while jumping the gap.
-        steps &= 0xffff_ffff_ffff;
+        steps &= ADDRESS_SPACE_SIZE - 1;
 
         Some(steps)
     }
@@ -278,10 +292,10 @@ impl VirtAddr {
 
         let mut addr = start.0.checked_add(count)?;
 
-        match addr.get_bits(47..) {
+        match addr.get_bits(TOP_BIT_IDX..) {
             0x1 => {
                 // Jump the gap by sign extending the 47th bit.
-                addr.set_bits(47.., 0x1ffff);
+                addr.set_bits(TOP_BIT_IDX.., (2 << SIGN_EXTENDED_BITS) - 1);
             }
             0x2 => {
                 // Address overflow
@@ -303,16 +317,12 @@ impl VirtAddr {
 
         let mut addr = start.0.checked_sub(count)?;
 
-        match addr.get_bits(47..) {
-            0x1fffe => {
-                // Jump the gap by sign extending the 47th bit.
-                addr.set_bits(47.., 0);
-            }
-            0x1fffd => {
-                // Address underflow
-                return None;
-            }
-            _ => {}
+        if addr.get_bits(TOP_BIT_IDX..) == (1 << SIGN_EXTENDED_BITS) - 2 {
+            // Jump the gap by sign extending the 47th bit.
+            addr.set_bits(TOP_BIT_IDX.., 0);
+        } else if addr.get_bits(TOP_BIT_IDX..) == (1 << SIGN_EXTENDED_BITS) - 3 {
+            // Address underflow
+            return None;
         }
 
         Some(unsafe { Self::new_unsafe(addr) })
@@ -664,6 +674,52 @@ mod tests {
     use super::*;
 
     #[test]
+    pub fn test_align_up() {
+        // align 1
+        assert_eq!(align_up(0, 1), 0);
+        assert_eq!(align_up(1234, 1), 1234);
+        assert_eq!(align_up(0xffff_ffff_ffff_ffff, 1), 0xffff_ffff_ffff_ffff);
+        // align 2
+        assert_eq!(align_up(0, 2), 0);
+        assert_eq!(align_up(1233, 2), 1234);
+        assert_eq!(align_up(0xffff_ffff_ffff_fffe, 2), 0xffff_ffff_ffff_fffe);
+        // address 0
+        assert_eq!(align_up(0, 128), 0);
+        assert_eq!(align_up(0, 1), 0);
+        assert_eq!(align_up(0, 2), 0);
+        assert_eq!(align_up(0, 0x8000_0000_0000_0000), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_virt_addr_align_up_overflow() {
+        VirtAddr::new(0xffff_ffff_ffff_ffff).align_up(2u64);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_phys_addr_align_up_overflow() {
+        PhysAddr::new(0x000f_ffff_ffff_ffff).align_up(2u64);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_from_ptr_array() {
+        let slice = &[1, 2, 3, 4, 5];
+        // Make sure that from_ptr(slice) is the address of the first element
+        assert_eq!(
+            VirtAddr::from_ptr(slice.as_slice()),
+            VirtAddr::from_ptr(&slice[0])
+        );
+    }
+}
+
+#[cfg(not(feature = "pml5"))]
+#[cfg(test)]
+mod tests_pml4 {
+    use super::*;
+
+    #[test]
     pub fn virtaddr_new_truncate() {
         assert_eq!(VirtAddr::new_truncate(0), VirtAddr(0));
         assert_eq!(VirtAddr::new_truncate(1 << 47), VirtAddr(0xfffff << 47));
@@ -816,20 +872,179 @@ mod tests {
     }
 
     #[test]
-    pub fn test_align_up() {
-        // align 1
-        assert_eq!(align_up(0, 1), 0);
-        assert_eq!(align_up(1234, 1), 1234);
-        assert_eq!(align_up(0xffff_ffff_ffff_ffff, 1), 0xffff_ffff_ffff_ffff);
-        // align 2
-        assert_eq!(align_up(0, 2), 0);
-        assert_eq!(align_up(1233, 2), 1234);
-        assert_eq!(align_up(0xffff_ffff_ffff_fffe, 2), 0xffff_ffff_ffff_fffe);
-        // address 0
-        assert_eq!(align_up(0, 128), 0);
-        assert_eq!(align_up(0, 1), 0);
-        assert_eq!(align_up(0, 2), 0);
-        assert_eq!(align_up(0, 0x8000_0000_0000_0000), 0);
+    fn test_virt_addr_align_up() {
+        // Make sure the 47th bit is extended.
+        assert_eq!(
+            VirtAddr::new(0x7fff_ffff_ffff).align_up(2u64),
+            VirtAddr::new(0xffff_8000_0000_0000)
+        );
+    }
+
+    #[test]
+    fn test_virt_addr_align_down() {
+        // Make sure the 47th bit is extended.
+        assert_eq!(
+            VirtAddr::new(0xffff_8000_0000_0000).align_down(1u64 << 48),
+            VirtAddr::new(0)
+        );
+    }
+}
+
+#[cfg(feature = "pml5")]
+#[cfg(test)]
+mod tests_pml5 {
+    use super::*;
+
+    #[test]
+    pub fn virtaddr_new_truncate() {
+        assert_eq!(VirtAddr::new_truncate(0), VirtAddr(0));
+        assert_eq!(VirtAddr::new_truncate(1 << 56), VirtAddr(0xfffff << 56));
+        assert_eq!(VirtAddr::new_truncate(123), VirtAddr(123));
+        assert_eq!(VirtAddr::new_truncate(123 << 56), VirtAddr(0xfffff << 56));
+    }
+
+    #[test]
+    #[cfg(feature = "step_trait")]
+    fn virtaddr_step_forward() {
+        assert_eq!(Step::forward(VirtAddr(0), 0), VirtAddr(0));
+        assert_eq!(Step::forward(VirtAddr(0), 1), VirtAddr(1));
+        assert_eq!(
+            Step::forward(VirtAddr(0xff_ffff_ffff_ffff), 1),
+            VirtAddr(0xff00_0000_0000_0000)
+        );
+        assert_eq!(
+            Step::forward(VirtAddr(0xff00_0000_0000_0000), 1),
+            VirtAddr(0xff00_0000_0000_0001)
+        );
+        assert_eq!(
+            Step::forward_checked(VirtAddr(0xffff_ffff_ffff_ffff), 1),
+            None
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::forward(VirtAddr(0xff_ffff_ffff_ffff), 0x12_3456_789a_bcdf),
+            VirtAddr(0xff12_3456_789a_bcde)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::forward(VirtAddr(0xff_ffff_ffff_ffff), 0x100_0000_0000_0000),
+            VirtAddr(0xffff_ffff_ffff_ffff)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::forward(VirtAddr(0xff_ffff_ffff_ff00), 0x100_0000_0000_00ff),
+            VirtAddr(0xffff_ffff_ffff_ffff)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::forward_checked(VirtAddr(0xff_ffff_ffff_ff00), 0x100_0000_0000_0100),
+            None
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::forward_checked(VirtAddr(0xff_ffff_ffff_ffff), 0x100_0000_0000_0001),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "step_trait")]
+    fn virtaddr_step_backward() {
+        assert_eq!(Step::backward(VirtAddr(0), 0), VirtAddr(0));
+        assert_eq!(Step::backward_checked(VirtAddr(0), 1), None);
+        assert_eq!(Step::backward(VirtAddr(1), 1), VirtAddr(0));
+        assert_eq!(
+            Step::backward(VirtAddr(0xffff_8000_0000_0000), 1),
+            VirtAddr(0x7fff_ffff_ffff)
+        );
+        assert_eq!(
+            Step::backward(VirtAddr(0xffff_8000_0000_0001), 1),
+            VirtAddr(0xffff_8000_0000_0000)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::backward(VirtAddr(0xffff_9234_5678_9abc), 0x1234_5678_9abd),
+            VirtAddr(0x7fff_ffff_ffff)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::backward(VirtAddr(0xffff_8000_0000_0000), 0x8000_0000_0000),
+            VirtAddr(0)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::backward(VirtAddr(0xffff_8000_0000_0000), 0x7fff_ffff_ff01),
+            VirtAddr(0xff)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::backward_checked(VirtAddr(0xffff_8000_0000_0000), 0x8000_0000_0001),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "step_trait")]
+    fn virtaddr_steps_between() {
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0)),
+            (0, Some(0))
+        );
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(1)),
+            (1, Some(1))
+        );
+        assert_eq!(Step::steps_between(&VirtAddr(1), &VirtAddr(0)), (0, None));
+        assert_eq!(
+            Step::steps_between(
+                &VirtAddr(0x7fff_ffff_ffff),
+                &VirtAddr(0xffff_8000_0000_0000)
+            ),
+            (1, Some(1))
+        );
+        assert_eq!(
+            Step::steps_between(
+                &VirtAddr(0xffff_8000_0000_0000),
+                &VirtAddr(0x7fff_ffff_ffff)
+            ),
+            (0, None)
+        );
+        assert_eq!(
+            Step::steps_between(
+                &VirtAddr(0xffff_8000_0000_0000),
+                &VirtAddr(0xffff_8000_0000_0000)
+            ),
+            (0, Some(0))
+        );
+        assert_eq!(
+            Step::steps_between(
+                &VirtAddr(0xffff_8000_0000_0000),
+                &VirtAddr(0xffff_8000_0000_0001)
+            ),
+            (1, Some(1))
+        );
+        assert_eq!(
+            Step::steps_between(
+                &VirtAddr(0xffff_8000_0000_0001),
+                &VirtAddr(0xffff_8000_0000_0000)
+            ),
+            (0, None)
+        );
+        // Make sure that we handle `steps > u32::MAX` correctly on 32-bit
+        // targets. On 64-bit targets, `0x1_0000_0000` fits into `usize`, so we
+        // can return exact lower and upper bounds. On 32-bit targets,
+        // `0x1_0000_0000` doesn't fit into `usize`, so we only return an lower
+        // bound of `usize::MAX` and don't return an upper bound.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0x1_0000_0000)),
+            (0x1_0000_0000, Some(0x1_0000_0000))
+        );
+        #[cfg(not(target_pointer_width = "64"))]
+        assert_eq!(
+            Step::steps_between(&VirtAddr(0), &VirtAddr(0x1_0000_0000)),
+            (usize::MAX, None)
+        );
     }
 
     #[test]
@@ -847,29 +1062,6 @@ mod tests {
         assert_eq!(
             VirtAddr::new(0xffff_8000_0000_0000).align_down(1u64 << 48),
             VirtAddr::new(0)
-        );
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_virt_addr_align_up_overflow() {
-        VirtAddr::new(0xffff_ffff_ffff_ffff).align_up(2u64);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_phys_addr_align_up_overflow() {
-        PhysAddr::new(0x000f_ffff_ffff_ffff).align_up(2u64);
-    }
-
-    #[test]
-    #[cfg(target_pointer_width = "64")]
-    fn test_from_ptr_array() {
-        let slice = &[1, 2, 3, 4, 5];
-        // Make sure that from_ptr(slice) is the address of the first element
-        assert_eq!(
-            VirtAddr::from_ptr(slice.as_slice()),
-            VirtAddr::from_ptr(&slice[0])
         );
     }
 }

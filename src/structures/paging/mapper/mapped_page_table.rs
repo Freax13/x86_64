@@ -14,7 +14,10 @@ use crate::structures::paging::{
 #[derive(Debug)]
 pub struct MappedPageTable<'a, P: PageTableFrameMapping> {
     page_table_walker: PageTableWalker<P>,
+    #[cfg(not(feature = "pml5"))]
     level_4_table: &'a mut PageTable,
+    #[cfg(feature = "pml5")]
+    level_5_table: &'a mut PageTable,
 }
 
 impl<'a, P: PageTableFrameMapping> MappedPageTable<'a, P> {
@@ -28,21 +31,38 @@ impl<'a, P: PageTableFrameMapping> MappedPageTable<'a, P> {
     /// of a valid page table hierarchy. Otherwise this function might break memory safety, e.g.
     /// by writing to an illegal memory location.
     #[inline]
-    pub unsafe fn new(level_4_table: &'a mut PageTable, page_table_frame_mapping: P) -> Self {
+    pub unsafe fn new(top_level_table: &'a mut PageTable, page_table_frame_mapping: P) -> Self {
         Self {
-            level_4_table,
+            #[cfg(not(feature = "pml5"))]
+            level_4_table: top_level_table,
+            #[cfg(feature = "pml5")]
+            level_5_table: top_level_table,
             page_table_walker: unsafe { PageTableWalker::new(page_table_frame_mapping) },
         }
     }
 
     /// Returns an immutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table(&self) -> &PageTable {
         self.level_4_table
     }
 
     /// Returns a mutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table_mut(&mut self) -> &mut PageTable {
         self.level_4_table
+    }
+
+    /// Returns an immutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table(&self) -> &PageTable {
+        self.level_5_table
+    }
+
+    /// Returns a mutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table_mut(&mut self) -> &mut PageTable {
+        self.level_5_table
     }
 
     /// Returns the `PageTableFrameMapping` used for converting virtual to physical addresses.
@@ -63,6 +83,15 @@ impl<'a, P: PageTableFrameMapping> MappedPageTable<'a, P> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.create_next_table(
+            &mut p5[page.p4_index()],
+            parent_table_flags,
+            allocator,
+        )?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self.page_table_walker.create_next_table(
             &mut p4[page.p4_index()],
@@ -91,6 +120,15 @@ impl<'a, P: PageTableFrameMapping> MappedPageTable<'a, P> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.create_next_table(
+            &mut p5[page.p4_index()],
+            parent_table_flags,
+            allocator,
+        )?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self.page_table_walker.create_next_table(
             &mut p4[page.p4_index()],
@@ -124,6 +162,15 @@ impl<'a, P: PageTableFrameMapping> MappedPageTable<'a, P> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.create_next_table(
+            &mut p5[page.p4_index()],
+            parent_table_flags,
+            allocator,
+        )?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self.page_table_walker.create_next_table(
             &mut p4[page.p4_index()],
@@ -170,6 +217,13 @@ impl<P: PageTableFrameMapping> Mapper<Size1GiB> for MappedPageTable<'_, P> {
         &mut self,
         page: Page<Size1GiB>,
     ) -> Result<(PhysFrame<Size1GiB>, MapperFlush<Size1GiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -197,6 +251,13 @@ impl<P: PageTableFrameMapping> Mapper<Size1GiB> for MappedPageTable<'_, P> {
         page: Page<Size1GiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size1GiB>, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -210,11 +271,36 @@ impl<P: PageTableFrameMapping> Mapper<Size1GiB> for MappedPageTable<'_, P> {
         Ok(MapperFlush::new(page))
     }
 
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size1GiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.level_5_table;
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
+    }
+
     unsafe fn set_flags_p4_entry(
         &mut self,
         page: Page<Size1GiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p4_entry = &mut p4[page.p4_index()];
 
@@ -244,6 +330,11 @@ impl<P: PageTableFrameMapping> Mapper<Size1GiB> for MappedPageTable<'_, P> {
     }
 
     fn translate_page(&self, page: Page<Size1GiB>) -> Result<PhysFrame<Size1GiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.next_table(&p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.level_4_table;
         let p3 = self.page_table_walker.next_table(&p4[page.p4_index()])?;
 
@@ -278,6 +369,13 @@ impl<P: PageTableFrameMapping> Mapper<Size2MiB> for MappedPageTable<'_, P> {
         &mut self,
         page: Page<Size2MiB>,
     ) -> Result<(PhysFrame<Size2MiB>, MapperFlush<Size2MiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -308,6 +406,13 @@ impl<P: PageTableFrameMapping> Mapper<Size2MiB> for MappedPageTable<'_, P> {
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size2MiB>, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -325,11 +430,36 @@ impl<P: PageTableFrameMapping> Mapper<Size2MiB> for MappedPageTable<'_, P> {
         Ok(MapperFlush::new(page))
     }
 
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size2MiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.level_5_table;
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
+    }
+
     unsafe fn set_flags_p4_entry(
         &mut self,
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p4_entry = &mut p4[page.p4_index()];
 
@@ -347,6 +477,13 @@ impl<P: PageTableFrameMapping> Mapper<Size2MiB> for MappedPageTable<'_, P> {
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -371,6 +508,11 @@ impl<P: PageTableFrameMapping> Mapper<Size2MiB> for MappedPageTable<'_, P> {
     }
 
     fn translate_page(&self, page: Page<Size2MiB>) -> Result<PhysFrame<Size2MiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.next_table(&p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.level_4_table;
         let p3 = self.page_table_walker.next_table(&p4[page.p4_index()])?;
         let p2 = self.page_table_walker.next_table(&p3[page.p3_index()])?;
@@ -406,6 +548,13 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
         &mut self,
         page: Page<Size4KiB>,
     ) -> Result<(PhysFrame<Size4KiB>, MapperFlush<Size4KiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -433,6 +582,13 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size4KiB>, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -453,11 +609,36 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
         Ok(MapperFlush::new(page))
     }
 
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size4KiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.level_5_table;
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
+    }
+
     unsafe fn set_flags_p4_entry(
         &mut self,
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p4_entry = &mut p4[page.p4_index()];
 
@@ -475,6 +656,13 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -495,6 +683,13 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self
+            .page_table_walker
+            .next_table_mut(&mut p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.level_4_table;
         let p3 = self
             .page_table_walker
@@ -514,6 +709,11 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
     }
 
     fn translate_page(&self, page: Page<Size4KiB>) -> Result<PhysFrame<Size4KiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = self.page_table_walker.next_table(&p5[page.p5_index()])?;
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.level_4_table;
         let p3 = self.page_table_walker.next_table(&p4[page.p4_index()])?;
         let p2 = self.page_table_walker.next_table(&p3[page.p3_index()])?;
@@ -533,6 +733,17 @@ impl<P: PageTableFrameMapping> Mapper<Size4KiB> for MappedPageTable<'_, P> {
 impl<P: PageTableFrameMapping> Translate for MappedPageTable<'_, P> {
     #[allow(clippy::inconsistent_digit_grouping)]
     fn translate(&self, addr: VirtAddr) -> TranslateResult {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.level_5_table;
+        #[cfg(feature = "pml5")]
+        let p4 = match self.page_table_walker.next_table(&p5[addr.p5_index()]) {
+            Ok(page_table) => page_table,
+            Err(PageTableWalkError::NotMapped) => return TranslateResult::NotMapped,
+            Err(PageTableWalkError::MappedToHugePage) => {
+                panic!("level 4 entry has huge page bit set")
+            }
+        };
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.level_4_table;
         let p3 = match self.page_table_walker.next_table(&p4[addr.p4_index()]) {
             Ok(page_table) => page_table,
@@ -677,10 +888,19 @@ impl<P: PageTableFrameMapping> CleanUp for MappedPageTable<'_, P> {
         }
 
         unsafe {
+            #[cfg(not(feature = "pml5"))]
             clean_up(
                 self.level_4_table,
                 &self.page_table_walker,
                 PageTableLevel::Four,
+                range,
+                frame_deallocator,
+            );
+            #[cfg(feature = "pml5")]
+            clean_up(
+                self.level_5_table,
+                &self.page_table_walker,
+                PageTableLevel::Five,
                 range,
                 frame_deallocator,
             );

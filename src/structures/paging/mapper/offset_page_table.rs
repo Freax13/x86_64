@@ -36,13 +36,27 @@ impl<'a> OffsetPageTable<'a> {
     }
 
     /// Returns an immutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table(&self) -> &PageTable {
         self.inner.level_4_table()
     }
 
     /// Returns a mutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table_mut(&mut self) -> &mut PageTable {
         self.inner.level_4_table_mut()
+    }
+
+    /// Returns an immutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table(&self) -> &PageTable {
+        self.inner.level_5_table()
+    }
+
+    /// Returns a mutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table_mut(&mut self) -> &mut PageTable {
+        self.inner.level_5_table_mut()
     }
 
     /// Returns the offset used for converting virtual to physical addresses.
@@ -99,6 +113,16 @@ impl Mapper<Size1GiB> for OffsetPageTable<'_> {
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size1GiB>, FlagUpdateError> {
         unsafe { self.inner.update_flags(page, flags) }
+    }
+
+    #[cfg(feature = "pml5")]
+    #[inline]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size1GiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        unsafe { self.inner.set_flags_p5_entry(page, flags) }
     }
 
     #[inline]
@@ -170,6 +194,16 @@ impl Mapper<Size2MiB> for OffsetPageTable<'_> {
         unsafe { self.inner.update_flags(page, flags) }
     }
 
+    #[cfg(feature = "pml5")]
+    #[inline]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size2MiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        unsafe { self.inner.set_flags_p5_entry(page, flags) }
+    }
+
     #[inline]
     unsafe fn set_flags_p4_entry(
         &mut self,
@@ -237,6 +271,16 @@ impl Mapper<Size4KiB> for OffsetPageTable<'_> {
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size4KiB>, FlagUpdateError> {
         unsafe { self.inner.update_flags(page, flags) }
+    }
+
+    #[cfg(feature = "pml5")]
+    #[inline]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size4KiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        unsafe { self.inner.set_flags_p5_entry(page, flags) }
     }
 
     #[inline]

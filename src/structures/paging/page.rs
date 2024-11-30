@@ -123,6 +123,14 @@ impl<S: PageSize> Page<S> {
         S::SIZE
     }
 
+    /// Returns the level 5 page table index of this page.
+    #[cfg(feature = "pml5")]
+    #[inline]
+    #[rustversion::attr(since(1.61), const)]
+    pub fn p5_index(self) -> PageTableIndex {
+        self.start_address().p5_index()
+    }
+
     /// Returns the level 4 page table index of this page.
     #[inline]
     #[rustversion::attr(since(1.61), const)]
@@ -202,10 +210,15 @@ impl Page<Size1GiB> {
     #[inline]
     #[rustversion::attr(since(1.61), const)]
     pub fn from_page_table_indices_1gib(
+        #[cfg(feature = "pml5")] p5_index: PageTableIndex,
         p4_index: PageTableIndex,
         p3_index: PageTableIndex,
     ) -> Self {
         let mut addr = 0;
+        #[cfg(feature = "pml5")]
+        {
+            addr |= p5_index.into_u64() << 48;
+        }
         addr |= p4_index.into_u64() << 39;
         addr |= p3_index.into_u64() << 30;
         Page::containing_address(VirtAddr::new_truncate(addr))
@@ -217,11 +230,16 @@ impl Page<Size2MiB> {
     #[inline]
     #[rustversion::attr(since(1.61), const)]
     pub fn from_page_table_indices_2mib(
+        #[cfg(feature = "pml5")] p5_index: PageTableIndex,
         p4_index: PageTableIndex,
         p3_index: PageTableIndex,
         p2_index: PageTableIndex,
     ) -> Self {
         let mut addr = 0;
+        #[cfg(feature = "pml5")]
+        {
+            addr |= p5_index.into_u64() << 48;
+        }
         addr |= p4_index.into_u64() << 39;
         addr |= p3_index.into_u64() << 30;
         addr |= p2_index.into_u64() << 21;
@@ -234,12 +252,17 @@ impl Page<Size4KiB> {
     #[inline]
     #[rustversion::attr(since(1.61), const)]
     pub fn from_page_table_indices(
+        #[cfg(feature = "pml5")] p5_index: PageTableIndex,
         p4_index: PageTableIndex,
         p3_index: PageTableIndex,
         p2_index: PageTableIndex,
         p1_index: PageTableIndex,
     ) -> Self {
         let mut addr = 0;
+        #[cfg(feature = "pml5")]
+        {
+            addr |= p5_index.into_u64() << 48;
+        }
         addr |= p4_index.into_u64() << 39;
         addr |= p3_index.into_u64() << 30;
         addr |= p2_index.into_u64() << 21;

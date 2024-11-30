@@ -29,7 +29,10 @@ use crate::structures::paging::{
 /// entries, even if not specified, because the design of the recursive page table requires it.
 #[derive(Debug)]
 pub struct RecursivePageTable<'a> {
+    #[cfg(not(feature = "pml5"))]
     p4: &'a mut PageTable,
+    #[cfg(feature = "pml5")]
+    p5: &'a mut PageTable,
     recursive_index: PageTableIndex,
 }
 
@@ -58,6 +61,10 @@ impl<'a> RecursivePageTable<'a> {
         let page = Page::containing_address(VirtAddr::new(table as *const _ as u64));
         let recursive_index = page.p4_index();
 
+        #[cfg(feature = "pml5")]
+        if page.p5_index() != recursive_index {
+            return Err(InvalidPageTable::NotRecursive);
+        }
         if page.p3_index() != recursive_index
             || page.p2_index() != recursive_index
             || page.p1_index() != recursive_index
@@ -69,7 +76,10 @@ impl<'a> RecursivePageTable<'a> {
         }
 
         Ok(RecursivePageTable {
+            #[cfg(not(feature = "pml5"))]
             p4: table,
+            #[cfg(feature = "pml5")]
+            p5: table,
             recursive_index,
         })
     }
@@ -84,19 +94,36 @@ impl<'a> RecursivePageTable<'a> {
     #[inline]
     pub unsafe fn new_unchecked(table: &'a mut PageTable, recursive_index: PageTableIndex) -> Self {
         RecursivePageTable {
+            #[cfg(not(feature = "pml5"))]
             p4: table,
+            #[cfg(feature = "pml5")]
+            p5: table,
             recursive_index,
         }
     }
 
     /// Returns an immutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table(&self) -> &PageTable {
         self.p4
     }
 
     /// Returns a mutable reference to the wrapped level 4 `PageTable` instance.
+    #[cfg(not(feature = "pml5"))]
     pub fn level_4_table_mut(&mut self) -> &mut PageTable {
         self.p4
+    }
+
+    /// Returns an immutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table(&self) -> &PageTable {
+        self.p5
+    }
+
+    /// Returns a mutable reference to the wrapped level 5 `PageTable` instance.
+    #[cfg(feature = "pml5")]
+    pub fn level_5_table_mut(&mut self) -> &mut PageTable {
+        self.p5
     }
 
     /// Internal helper function to create the page table of the next level if needed.
@@ -180,7 +207,21 @@ impl<'a> RecursivePageTable<'a> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
-        use crate::structures::paging::PageTableFlags as Flags;
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p4_page = p4_page(page, self.recursive_index);
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe {
+            Self::create_next_table(
+                &mut p5[page.p5_index()],
+                p4_page,
+                parent_table_flags,
+                allocator,
+            )?
+        };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         let p3_page = p3_page(page, self.recursive_index);
@@ -196,7 +237,7 @@ impl<'a> RecursivePageTable<'a> {
         if !p3[page.p3_index()].is_unused() {
             return Err(MapToError::PageAlreadyMapped(frame));
         }
-        p3[page.p3_index()].set_addr(frame.start_address(), flags | Flags::HUGE_PAGE);
+        p3[page.p3_index()].set_addr(frame.start_address(), flags | PageTableFlags::HUGE_PAGE);
 
         Ok(MapperFlush::new(page))
     }
@@ -214,7 +255,21 @@ impl<'a> RecursivePageTable<'a> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
-        use crate::structures::paging::PageTableFlags as Flags;
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p4_page = p4_page(page, self.recursive_index);
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe {
+            Self::create_next_table(
+                &mut p5[page.p5_index()],
+                p4_page,
+                parent_table_flags,
+                allocator,
+            )?
+        };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         let p3_page = p3_page(page, self.recursive_index);
@@ -240,7 +295,7 @@ impl<'a> RecursivePageTable<'a> {
         if !p2[page.p2_index()].is_unused() {
             return Err(MapToError::PageAlreadyMapped(frame));
         }
-        p2[page.p2_index()].set_addr(frame.start_address(), flags | Flags::HUGE_PAGE);
+        p2[page.p2_index()].set_addr(frame.start_address(), flags | PageTableFlags::HUGE_PAGE);
 
         Ok(MapperFlush::new(page))
     }
@@ -258,6 +313,21 @@ impl<'a> RecursivePageTable<'a> {
     where
         A: FrameAllocator<Size4KiB> + ?Sized,
     {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p4_page = p4_page(page, self.recursive_index);
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe {
+            Self::create_next_table(
+                &mut p5[page.p5_index()],
+                p4_page,
+                parent_table_flags,
+                allocator,
+            )?
+        };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         let p3_page = p3_page(page, self.recursive_index);
@@ -319,7 +389,21 @@ impl Mapper<Size1GiB> for RecursivePageTable<'_> {
         &mut self,
         page: Page<Size1GiB>,
     ) -> Result<(PhysFrame<Size1GiB>, MapperFlush<Size1GiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p5_entry = &p5[page.p5_index()];
+        #[cfg(feature = "pml5")]
+        p5_entry.frame().map_err(|err| match err {
+            FrameError::FrameNotPresent => UnmapError::PageNotMapped,
+            FrameError::HugeFrame => UnmapError::ParentEntryHugePage,
+        })?;
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &p4[page.p4_index()];
 
         p4_entry.frame().map_err(|err| match err {
@@ -350,7 +434,18 @@ impl Mapper<Size1GiB> for RecursivePageTable<'_> {
         page: Page<Size1GiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size1GiB>, FlagUpdateError> {
-        use crate::structures::paging::PageTableFlags as Flags;
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -362,9 +457,28 @@ impl Mapper<Size1GiB> for RecursivePageTable<'_> {
         if p3[page.p3_index()].is_unused() {
             return Err(FlagUpdateError::PageNotMapped);
         }
-        p3[page.p3_index()].set_flags(flags | Flags::HUGE_PAGE);
+        p3[page.p3_index()].set_flags(flags | PageTableFlags::HUGE_PAGE);
 
         Ok(MapperFlush::new(page))
+    }
+
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size1GiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.p5;
+
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
     }
 
     unsafe fn set_flags_p4_entry(
@@ -372,7 +486,20 @@ impl Mapper<Size1GiB> for RecursivePageTable<'_> {
         page: Page<Size1GiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &mut p4[page.p4_index()];
 
         if p4_entry.is_unused() {
@@ -401,6 +528,18 @@ impl Mapper<Size1GiB> for RecursivePageTable<'_> {
     }
 
     fn translate_page(&self, page: Page<Size1GiB>) -> Result<PhysFrame<Size1GiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(TranslateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &*(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -439,7 +578,21 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
         &mut self,
         page: Page<Size2MiB>,
     ) -> Result<(PhysFrame<Size2MiB>, MapperFlush<Size2MiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p5_entry = &p5[page.p5_index()];
+        #[cfg(feature = "pml5")]
+        p5_entry.frame().map_err(|err| match err {
+            FrameError::FrameNotPresent => UnmapError::PageNotMapped,
+            FrameError::HugeFrame => UnmapError::ParentEntryHugePage,
+        })?;
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &p4[page.p4_index()];
         p4_entry.frame().map_err(|err| match err {
             FrameError::FrameNotPresent => UnmapError::PageNotMapped,
@@ -476,7 +629,18 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size2MiB>, FlagUpdateError> {
-        use crate::structures::paging::PageTableFlags as Flags;
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -495,9 +659,28 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
             return Err(FlagUpdateError::PageNotMapped);
         }
 
-        p2[page.p2_index()].set_flags(flags | Flags::HUGE_PAGE);
+        p2[page.p2_index()].set_flags(flags | PageTableFlags::HUGE_PAGE);
 
         Ok(MapperFlush::new(page))
+    }
+
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size2MiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.p5;
+
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
     }
 
     unsafe fn set_flags_p4_entry(
@@ -505,7 +688,20 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &mut p4[page.p4_index()];
 
         if p4_entry.is_unused() {
@@ -522,6 +718,18 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
         page: Page<Size2MiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -549,6 +757,18 @@ impl Mapper<Size2MiB> for RecursivePageTable<'_> {
     }
 
     fn translate_page(&self, page: Page<Size2MiB>) -> Result<PhysFrame<Size2MiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(TranslateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &*(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -594,7 +814,21 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
         &mut self,
         page: Page<Size4KiB>,
     ) -> Result<(PhysFrame<Size4KiB>, MapperFlush<Size4KiB>), UnmapError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+        #[cfg(feature = "pml5")]
+        let p5_entry = &p5[page.p5_index()];
+        #[cfg(feature = "pml5")]
+        p5_entry.frame().map_err(|err| match err {
+            FrameError::FrameNotPresent => UnmapError::PageNotMapped,
+            FrameError::HugeFrame => UnmapError::ParentEntryHugePage,
+        })?;
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &p4[page.p4_index()];
         p4_entry.frame().map_err(|err| match err {
             FrameError::FrameNotPresent => UnmapError::PageNotMapped,
@@ -632,6 +866,18 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlush<Size4KiB>, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -661,12 +907,44 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
         Ok(MapperFlush::new(page))
     }
 
+    #[cfg(feature = "pml5")]
+    unsafe fn set_flags_p5_entry(
+        &mut self,
+        page: Page<Size4KiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlushAll, FlagUpdateError> {
+        let p5 = &mut self.p5;
+
+        let p5_entry = &mut p5[page.p5_index()];
+
+        if p5_entry.is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        p5_entry.set_flags(flags);
+
+        Ok(MapperFlushAll::new())
+    }
+
     unsafe fn set_flags_p4_entry(
         &mut self,
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
+
         let p4_entry = &mut p4[page.p4_index()];
 
         if p4_entry.is_unused() {
@@ -683,6 +961,18 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -706,6 +996,18 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
         page: Page<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<MapperFlushAll, FlagUpdateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &mut self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(FlagUpdateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &mut *(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &mut self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -731,6 +1033,18 @@ impl Mapper<Size4KiB> for RecursivePageTable<'_> {
     }
 
     fn translate_page(&self, page: Page<Size4KiB>) -> Result<PhysFrame<Size4KiB>, TranslateError> {
+        #[cfg(feature = "pml5")]
+        let p5 = &self.p5;
+
+        #[cfg(feature = "pml5")]
+        if p5[page.p5_index()].is_unused() {
+            return Err(TranslateError::PageNotMapped);
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &*(p4_ptr(page, self.recursive_index)) };
+
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.p4;
 
         if p4[page.p4_index()].is_unused() {
@@ -768,13 +1082,29 @@ impl Translate for RecursivePageTable<'_> {
     fn translate(&self, addr: VirtAddr) -> TranslateResult {
         let page = Page::containing_address(addr);
 
+        #[cfg(feature = "pml5")]
+        let p5 = &self.p5;
+        #[cfg(feature = "pml5")]
+        let p5_entry = &p5[addr.p5_index()];
+        #[cfg(feature = "pml5")]
+        if p5_entry.is_unused() {
+            return TranslateResult::NotMapped;
+        }
+        #[cfg(feature = "pml5")]
+        if p5_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            panic!("level 5 entry has huge page bit set")
+        }
+
+        #[cfg(feature = "pml5")]
+        let p4 = unsafe { &*(p4_ptr(page, self.recursive_index)) };
+        #[cfg(not(feature = "pml5"))]
         let p4 = &self.p4;
         let p4_entry = &p4[addr.p4_index()];
         if p4_entry.is_unused() {
             return TranslateResult::NotMapped;
         }
         if p4_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            panic!("level 4 entry has huge page bit set")
+            panic!("level 5 entry has huge page bit set")
         }
 
         let p3 = unsafe { &*(p3_ptr(page, self.recursive_index)) };
@@ -923,10 +1253,19 @@ impl CleanUp for RecursivePageTable<'_> {
             page_table.iter().all(PageTableEntry::is_unused)
         }
 
+        #[cfg(not(feature = "pml5"))]
         clean_up(
             self.recursive_index,
             self.level_4_table_mut(),
             PageTableLevel::Four,
+            range,
+            frame_deallocator,
+        );
+        #[cfg(feature = "pml5")]
+        clean_up(
+            self.recursive_index,
+            self.level_5_table_mut(),
+            PageTableLevel::Five,
             range,
             frame_deallocator,
         );
@@ -960,6 +1299,24 @@ impl fmt::Display for InvalidPageTable {
     }
 }
 
+#[cfg(feature = "pml5")]
+#[inline]
+fn p4_ptr<S: PageSize>(page: Page<S>, recursive_index: PageTableIndex) -> *mut PageTable {
+    p4_page(page, recursive_index).start_address().as_mut_ptr()
+}
+
+#[cfg(feature = "pml5")]
+#[inline]
+fn p4_page<S: PageSize>(page: Page<S>, recursive_index: PageTableIndex) -> Page {
+    Page::from_page_table_indices(
+        recursive_index,
+        recursive_index,
+        recursive_index,
+        recursive_index,
+        page.p5_index(),
+    )
+}
+
 #[inline]
 fn p3_ptr<S: PageSize>(page: Page<S>, recursive_index: PageTableIndex) -> *mut PageTable {
     p3_page(page, recursive_index).start_address().as_mut_ptr()
@@ -968,6 +1325,8 @@ fn p3_ptr<S: PageSize>(page: Page<S>, recursive_index: PageTableIndex) -> *mut P
 #[inline]
 fn p3_page<S: PageSize>(page: Page<S>, recursive_index: PageTableIndex) -> Page {
     Page::from_page_table_indices(
+        #[cfg(feature = "pml5")]
+        recursive_index,
         recursive_index,
         recursive_index,
         recursive_index,
@@ -983,6 +1342,8 @@ fn p2_ptr<S: NotGiantPageSize>(page: Page<S>, recursive_index: PageTableIndex) -
 #[inline]
 fn p2_page<S: NotGiantPageSize>(page: Page<S>, recursive_index: PageTableIndex) -> Page {
     Page::from_page_table_indices(
+        #[cfg(feature = "pml5")]
+        recursive_index,
         recursive_index,
         recursive_index,
         page.p4_index(),
@@ -998,6 +1359,8 @@ fn p1_ptr(page: Page<Size4KiB>, recursive_index: PageTableIndex) -> *mut PageTab
 #[inline]
 fn p1_page(page: Page<Size4KiB>, recursive_index: PageTableIndex) -> Page {
     Page::from_page_table_indices(
+        #[cfg(feature = "pml5")]
+        recursive_index,
         recursive_index,
         page.p4_index(),
         page.p3_index(),
